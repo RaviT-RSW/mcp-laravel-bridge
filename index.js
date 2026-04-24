@@ -1,4 +1,5 @@
 import express from "express";
+import { randomUUID } from "node:crypto";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { z } from "zod";
@@ -7,13 +8,19 @@ import axios from "axios";
 const app = express();
 app.use(express.json());
 
-// Store transports in a map to manage concurrent sessions
 const transports = new Map();
 
 function createServer() {
-  const server = new McpServer({ name: "Laravel-Bridge", version: "1.0.0" });
+  // Add the capabilities object here
+  const server = new McpServer(
+    { name: "Laravel-Bridge", version: "1.0.0" },
+    {
+      capabilities: {
+        tools: {}, 
+      },
+    }
+  );
   
-  // Define tools here
   server.tool(
     "create_estimate",
     "Create a new estimate",
@@ -28,29 +35,31 @@ function createServer() {
   return server;
 }
 
-// Unified endpoint for Streamable HTTP
 app.post("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
-  
+
   if (sessionId && transports.has(sessionId)) {
     const transport = transports.get(sessionId);
-    await transport.handleRequest(req, res);
-  } else if (!sessionId && req.body.method === "initialize") {
-    // New Session Initialization
+    await transport.handleRequest(req, res, req.body);
+    return;
+  }
+
+  if (req.body.method === "initialize") {
     const transport = new StreamableHTTPServerTransport("/mcp", res);
-    const server = createServer();
     
-    // Track session
+    // Save to map
     transport.onclose = () => transports.delete(transport.sessionId);
     transports.set(transport.sessionId, transport);
     
+    const server = createServer();
     await server.connect(transport);
-  } else {
-    res.status(400).send("Invalid request");
+    await transport.handleRequest(req, res, req.body);
+    return;
   }
+
+  res.status(400).send("Invalid session");
 });
 
-// Handle GET for SSE-based notifications (still supported by StreamableHTTP)
 app.get("/mcp", async (req, res) => {
   const sessionId = req.headers["mcp-session-id"];
   if (sessionId && transports.has(sessionId)) {
